@@ -1,0 +1,144 @@
+name: Publish A-share Snapshot
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: 只构建和校验，不发布。"
+        type: boolean
+        default: false
+      date:
+        description: "快照日期 YYYY-MM-DD，留空则使用 Asia/Shanghai 今日日期。"
+        required: false
+        default: ""
+      universe:
+        description: "private 数据仓内的 universe JSON 路径。"
+        required: false
+        default: "universes/cn-a-share-main.json"
+      allow_max_date_mismatch:
+        description: "允许 coverage.max_date 与快照日期不同。"
+        type: boolean
+        default: false
+      workers:
+        description: "构建 worker 数。"
+        required: false
+        default: "2"
+      build_timeout_seconds:
+        description: "历史数据构建子进程超时时间，单位秒。"
+        required: false
+        default: "7200"
+  schedule:
+    - cron: '17 11 * * 1-5'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout runner repo
+        uses: actions/checkout@v4
+
+      - name: Require private repo tokens
+        env:
+          PY_TRADING_DATA_REPO_TOKEN: ${{ secrets.PY_TRADING_DATA_REPO_TOKEN }}
+          PY_TRADING_REPO_TOKEN: ${{ secrets.PY_TRADING_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PY_TRADING_DATA_REPO_TOKEN" ]; then
+            echo "::error::Add PY_TRADING_DATA_REPO_TOKEN with Contents read/write access to peilinok/py-trading-data."
+            exit 1
+          fi
+          if [ -z "$PY_TRADING_REPO_TOKEN" ]; then
+            echo "::error::Add PY_TRADING_REPO_TOKEN with read access to peilinok/py-trading."
+            exit 1
+          fi
+
+      - name: Checkout private data repo
+        uses: actions/checkout@v4
+        with:
+          repository: peilinok/py-trading-data
+          path: data-repo
+          token: ${{ secrets.PY_TRADING_DATA_REPO_TOKEN }}
+
+      - name: Checkout private py-trading repo
+        uses: actions/checkout@v4
+        with:
+          repository: peilinok/py-trading
+          path: data-repo/py-trading
+          token: ${{ secrets.PY_TRADING_REPO_TOKEN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install py-trading dependencies
+        run: uv sync
+        working-directory: data-repo/py-trading
+
+      - name: Build and publish snapshot
+        env:
+          INPUT_DATE: ${{ inputs.date }}
+          SNAPSHOT_UNIVERSE: ${{ inputs.universe }}
+          SNAPSHOT_WORKERS: ${{ inputs.workers }}
+          BUILD_TIMEOUT_SECONDS: ${{ inputs.build_timeout_seconds }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          ALLOW_MAX_DATE_MISMATCH: ${{ inputs.allow_max_date_mismatch }}
+          GH_TOKEN: ${{ secrets.PY_TRADING_DATA_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          SNAPSHOT_UNIVERSE="${SNAPSHOT_UNIVERSE:-universes/cn-a-share-main.json}"
+          SNAPSHOT_WORKERS="${SNAPSHOT_WORKERS:-2}"
+          BUILD_TIMEOUT_SECONDS="${BUILD_TIMEOUT_SECONDS:-7200}"
+          DRY_RUN="${DRY_RUN:-false}"
+          ALLOW_MAX_DATE_MISMATCH="${ALLOW_MAX_DATE_MISMATCH:-false}"
+
+          snapshot_date="$INPUT_DATE"
+          if [ -z "$snapshot_date" ]; then
+            snapshot_date="$(TZ=Asia/Shanghai date +%F)"
+            echo "date not provided; defaulting to today (Asia/Shanghai): $snapshot_date"
+          fi
+          echo "SNAPSHOT_DATE=$snapshot_date" >> "$GITHUB_ENV"
+
+          extra_args=()
+          if [ "$DRY_RUN" = "true" ]; then
+            extra_args+=(--dry-run)
+          fi
+          if [ "$ALLOW_MAX_DATE_MISMATCH" = "true" ]; then
+            extra_args+=(--allow-max-date-mismatch)
+          fi
+
+          publish_jitter_seconds=$((RANDOM % 60 + 1))
+          echo "waiting ${publish_jitter_seconds}s before data fetch"
+          sleep "$publish_jitter_seconds"
+
+          provider_summary_json="$RUNNER_TEMP/provider-summary.json"
+          python tools/publish_snapshot.py \
+            --date "$snapshot_date" \
+            --universe "$SNAPSHOT_UNIVERSE" \
+            --workers "$SNAPSHOT_WORKERS" \
+            --build-timeout-seconds "$BUILD_TIMEOUT_SECONDS" \
+            --py-trading-dir py-trading \
+            --provider-summary-json "$provider_summary_json" \
+            "${extra_args[@]}"
+        working-directory: data-repo
+
+      - name: Commit manifest changes
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add manifest.json manifests/
+          git commit -m "data: publish snapshot ${SNAPSHOT_DATE}" || exit 0
+          git push
+        working-directory: data-repo

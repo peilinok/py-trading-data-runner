@@ -1,0 +1,124 @@
+name: Publish US Snapshot
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: 只构建和校验，不发布。"
+        type: boolean
+        default: false
+      date:
+        description: "快照日期 YYYY-MM-DD，留空则使用 America/New_York 今日日期。"
+        required: false
+        default: ""
+      universe:
+        description: "private 数据仓内的美股 universe JSON 路径。"
+        required: false
+        default: "universes/us-stock-main.json"
+      allow_max_date_mismatch:
+        description: "允许 coverage.max_date 与快照日期不同。"
+        type: boolean
+        default: false
+      workers:
+        description: "构建 worker 数。"
+        required: false
+        default: "2"
+      build_timeout_seconds:
+        description: "历史数据构建子进程超时时间，单位秒。"
+        required: false
+        default: "3600"
+  schedule:
+    - cron: '47 21 * * 1-5'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout runner repo
+        uses: actions/checkout@v4
+
+      - name: Require private data repo token
+        env:
+          PY_TRADING_DATA_REPO_TOKEN: ${{ secrets.PY_TRADING_DATA_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PY_TRADING_DATA_REPO_TOKEN" ]; then
+            echo "::error::Add PY_TRADING_DATA_REPO_TOKEN with Contents read/write access to peilinok/py-trading-data."
+            exit 1
+          fi
+
+      - name: Checkout private data repo
+        uses: actions/checkout@v4
+        with:
+          repository: peilinok/py-trading-data
+          path: data-repo
+          token: ${{ secrets.PY_TRADING_DATA_REPO_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build and publish US snapshot
+        env:
+          INPUT_DATE: ${{ inputs.date }}
+          SNAPSHOT_UNIVERSE: ${{ inputs.universe }}
+          SNAPSHOT_WORKERS: ${{ inputs.workers }}
+          BUILD_TIMEOUT_SECONDS: ${{ inputs.build_timeout_seconds }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          ALLOW_MAX_DATE_MISMATCH: ${{ inputs.allow_max_date_mismatch }}
+          GH_TOKEN: ${{ secrets.PY_TRADING_DATA_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          SNAPSHOT_UNIVERSE="${SNAPSHOT_UNIVERSE:-universes/us-stock-main.json}"
+          SNAPSHOT_WORKERS="${SNAPSHOT_WORKERS:-2}"
+          BUILD_TIMEOUT_SECONDS="${BUILD_TIMEOUT_SECONDS:-3600}"
+          DRY_RUN="${DRY_RUN:-false}"
+          ALLOW_MAX_DATE_MISMATCH="${ALLOW_MAX_DATE_MISMATCH:-false}"
+
+          snapshot_date="$INPUT_DATE"
+          if [ -z "$snapshot_date" ]; then
+            snapshot_date="$(TZ=America/New_York date +%F)"
+            echo "date not provided; defaulting to today (America/New_York): $snapshot_date"
+          fi
+          echo "SNAPSHOT_DATE=$snapshot_date" >> "$GITHUB_ENV"
+
+          extra_args=()
+          if [ "$DRY_RUN" = "true" ]; then
+            extra_args+=(--dry-run)
+          fi
+          if [ "$ALLOW_MAX_DATE_MISMATCH" = "true" ]; then
+            extra_args+=(--allow-max-date-mismatch)
+          fi
+
+          publish_jitter_seconds=$((RANDOM % 60 + 1))
+          echo "waiting ${publish_jitter_seconds}s before data fetch"
+          sleep "$publish_jitter_seconds"
+
+          provider_summary_json="$RUNNER_TEMP/us-provider-summary.json"
+          python tools/publish_us_snapshot.py \
+            --date "$snapshot_date" \
+            --universe "$SNAPSHOT_UNIVERSE" \
+            --workers "$SNAPSHOT_WORKERS" \
+            --build-timeout-seconds "$BUILD_TIMEOUT_SECONDS" \
+            --provider-summary-json "$provider_summary_json" \
+            "${extra_args[@]}"
+        working-directory: data-repo
+
+      - name: Commit US manifest changes
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add manifest-us-stock.json manifests/us-stock/
+          git commit -m "data(us): publish snapshot ${SNAPSHOT_DATE}" || exit 0
+          git push
+        working-directory: data-repo
