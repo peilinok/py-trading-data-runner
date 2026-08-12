@@ -1,0 +1,40 @@
+name: Probe Private Release Write
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Probe private release write permission
+        env:
+          GH_TOKEN: ${{ secrets.PY_TRADING_DATA_REPO_TOKEN }}
+          TARGET_REPO: peilinok/py-trading-data
+          TAG: probe-public-runner-release-write
+        run: |
+          set -euo pipefail
+          asset="$RUNNER_TEMP/probe-release-write.txt"
+          echo "probe created at $(date -u +%FT%TZ)" > "$asset"
+
+          cleanup() {
+            gh release delete "$TAG" --repo "$TARGET_REPO" --yes >/dev/null 2>&1 || true
+            gh api -X DELETE "repos/$TARGET_REPO/git/refs/tags/$TAG" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          cleanup
+          gh release create "$TAG" "$asset" \
+            --repo "$TARGET_REPO" \
+            --title "Probe public runner release write" \
+            --notes "Temporary probe. This release should be deleted by the workflow."
+
+          gh release view "$TAG" --repo "$TARGET_REPO" --json tagName,assets --jq '.'
+          cleanup
