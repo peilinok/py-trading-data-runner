@@ -1,0 +1,124 @@
+name: CN Security Master Admission Probe
+
+on:
+  schedule:
+    - cron: '47 11 * * 1-5'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      retry_needed: ${{ steps.download.outputs.exit_code == '75' }}
+      source_commit: ${{ steps.source.outputs.commit }}
+    permissions:
+      contents: read
+    steps:
+      - name: Require private data repo token
+        env:
+          PY_TRADING_DATA_REPO_TOKEN: ${{ secrets.PY_TRADING_DATA_REPO_TOKEN }}
+        run: |
+          if [ -z "$PY_TRADING_DATA_REPO_TOKEN" ]; then
+            echo "::error::Add PY_TRADING_DATA_REPO_TOKEN with read access to peilinok/py-trading-data."
+            exit 1
+          fi
+
+      - name: Checkout private data repo
+        uses: actions/checkout@v4
+        with:
+          repository: peilinok/py-trading-data
+          path: data-repo
+          token: ${{ secrets.PY_TRADING_DATA_REPO_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Record source commit
+        id: source
+        run: |
+          source_commit="$(git rev-parse HEAD)"
+          echo "commit=$source_commit" >> "$GITHUB_OUTPUT"
+          echo "- source commit: \`$source_commit\`" >> "$GITHUB_STEP_SUMMARY"
+        working-directory: data-repo
+
+      - name: Run probe tests
+        run: python -m unittest tests.test_cn_security_master_probe tests.test_workflows
+        working-directory: data-repo
+
+      - name: Download and audit exchange sources
+        id: download
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/cn-security-master"
+          set +e
+          python tools/cn_security_master_probe.py \
+            --work-dir "$RUNNER_TEMP/cn-security-master" \
+            --output-json "$RUNNER_TEMP/cn-security-master-coverage.json" \
+            --summary "$GITHUB_STEP_SUMMARY"
+          exit_code=$?
+          set -e
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          exit "$exit_code"
+        working-directory: data-repo
+
+      - name: Fail non-retryable probe error
+        if: steps.download.outcome == 'failure' && steps.download.outputs.exit_code != '75'
+        run: exit 1
+
+      - name: Upload derived coverage report
+        if: steps.download.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cn-security-master-coverage
+          path: ${{ runner.temp }}/cn-security-master-coverage.json
+          retention-days: 21
+
+  retry_probe:
+    needs: probe
+    if: needs.probe.outputs.retry_needed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout private data repo
+        uses: actions/checkout@v4
+        with:
+          repository: peilinok/py-trading-data
+          ref: ${{ needs.probe.outputs.source_commit }}
+          path: data-repo
+          token: ${{ secrets.PY_TRADING_DATA_REPO_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Record fallback source commit
+        run: |
+          echo '- runner fallback: `2`' >> "$GITHUB_STEP_SUMMARY"
+          echo "- source commit: \`$(git rev-parse HEAD)\`" >> "$GITHUB_STEP_SUMMARY"
+        working-directory: data-repo
+
+      - name: Download and audit exchange sources on fallback runner
+        run: |
+          mkdir -p "$RUNNER_TEMP/cn-security-master"
+          python tools/cn_security_master_probe.py \
+            --work-dir "$RUNNER_TEMP/cn-security-master" \
+            --output-json "$RUNNER_TEMP/cn-security-master-coverage.json" \
+            --summary "$GITHUB_STEP_SUMMARY"
+        working-directory: data-repo
+
+      - name: Upload derived coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: cn-security-master-coverage
+          path: ${{ runner.temp }}/cn-security-master-coverage.json
+          retention-days: 21

@@ -17,9 +17,10 @@
 
 - `Publish A-share Snapshot`：构建 A 股后复权快照，并上传到 private `peilinok/py-trading-data` Release。
 - `Publish US Snapshot`：构建美股 Yahoo adjusted-close 快照，并上传到 private `peilinok/py-trading-data` Release。
+- `CN Security Master Admission Probe`：从 private 数据仓运行交易所证券主数据准入探针，只上传聚合计数、字段和 hash。
 
 Workflow 支持 `dry_run=true`；dry run 只构建和校验，不发布 Release asset，也不提交 manifest 更新。
 
 ## 安全边界
 
-本 public 仓不配置 pull request workflow，也不保存生成资产。日志保持克制：不要打印生成后的 SQLite 内容、完整 manifest、完整 universe、token，或调试以外不必要的 Release asset URL。
+本 public 仓不配置 pull request workflow，也不保存行情快照或原始交易所响应。证券主数据探针的原始响应只存在于 runner 临时目录，artifact 仅包含聚合审计报告。日志保持克制：不要打印生成后的 SQLite 内容、完整 manifest、完整 universe、token，或调试以外不必要的 Release asset URL。
