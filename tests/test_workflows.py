@@ -8,6 +8,24 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_cninfo_probe_uses_private_source_and_has_no_persistent_output(self) -> None:
+        text = (
+            ROOT / ".github" / "workflows" / "cninfo-admission-probe.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("name: CNINFO Admission Probe", text)
+        self.assertIn("workflow_dispatch:", text)
+        self.assertNotIn("schedule:", text)
+        self.assertNotIn("push:", text)
+        self.assertNotIn("pull_request:", text)
+        self.assertIn("repository: peilinok/py-trading-data", text)
+        self.assertIn("token: ${{ secrets.PY_TRADING_DATA_REPO_TOKEN }}", text)
+        self.assertIn("CNINFO_ACCESS_TOKEN: ${{ secrets.CNINFO_ACCESS_TOKEN }}", text)
+        self.assertIn("python tools/cninfo_admission_probe.py", text)
+        self.assertIn('"$GITHUB_STEP_SUMMARY"', text)
+        self.assertNotIn("upload-artifact", text)
+        self.assertNotIn("set -x", text)
+
     def test_cn_security_master_probe_uses_private_source_and_aggregate_output(self) -> None:
         text = (
             ROOT / ".github" / "workflows" / "cn-security-master-admission-probe.yml"

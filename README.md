@@ -10,6 +10,7 @@
 
 - `PY_TRADING_DATA_REPO_TOKEN`：fine-grained token，只授权 `peilinok/py-trading-data`，权限为 `Contents: read and write`。
 - `PY_TRADING_REPO_TOKEN`：fine-grained token，只授权 `peilinok/py-trading`，权限为 `Contents: read-only`。
+- `CNINFO_ACCESS_TOKEN`：巨潮数据平台 Access Token，仅供手工准入探针使用。
 
 两个 token 分开配置，避免读取 `py-trading` 的 token 同时拥有 Release/写入权限。
 
@@ -18,6 +19,7 @@
 - `Publish A-share Snapshot`：构建 A 股后复权快照，并上传到 private `peilinok/py-trading-data` Release。
 - `Publish US Snapshot`：构建美股 Yahoo adjusted-close 快照，并上传到 private `peilinok/py-trading-data` Release。
 - `CN Security Master Admission Probe`：从 private 数据仓运行交易所证券主数据准入探针，只上传聚合计数、字段和 hash。
+- `CNINFO Admission Probe`：手工运行巨潮最小准入探针，只输出脱敏聚合结果，不上传 artifact。
 
 Workflow 支持 `dry_run=true`；dry run 只构建和校验，不发布 Release asset，也不提交 manifest 更新。
 

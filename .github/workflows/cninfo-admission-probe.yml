@@ -1,0 +1,53 @@
+name: CNINFO Admission Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require probe secrets
+        env:
+          PY_TRADING_DATA_REPO_TOKEN: ${{ secrets.PY_TRADING_DATA_REPO_TOKEN }}
+          CNINFO_ACCESS_TOKEN: ${{ secrets.CNINFO_ACCESS_TOKEN }}
+        run: |
+          if [ -z "$PY_TRADING_DATA_REPO_TOKEN" ]; then
+            echo "::error::PY_TRADING_DATA_REPO_TOKEN is not configured."
+            exit 1
+          fi
+          if [ -z "$CNINFO_ACCESS_TOKEN" ]; then
+            echo "::error::CNINFO_ACCESS_TOKEN is not configured."
+            exit 1
+          fi
+
+      - name: Checkout private data repo
+        uses: actions/checkout@v4
+        with:
+          repository: peilinok/py-trading-data
+          path: data-repo
+          token: ${{ secrets.PY_TRADING_DATA_REPO_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Record source commit
+        run: |
+          echo "- source commit: \`$(git rev-parse HEAD)\`" >> "$GITHUB_STEP_SUMMARY"
+        working-directory: data-repo
+
+      - name: Run probe tests
+        run: python -m unittest tests.test_cninfo_admission_probe
+        working-directory: data-repo
+
+      - name: Probe CNINFO from GitHub-hosted runner
+        env:
+          CNINFO_ACCESS_TOKEN: ${{ secrets.CNINFO_ACCESS_TOKEN }}
+        run: python tools/cninfo_admission_probe.py --summary "$GITHUB_STEP_SUMMARY"
+        working-directory: data-repo
